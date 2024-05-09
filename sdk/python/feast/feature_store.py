@@ -2370,6 +2370,13 @@ class FeatureStore:
         registry_server.start_server(self, port)
 
     @log_exceptions_and_usage
+    def serve_offline(self, host: str, port: int) -> None:
+        """Start offline server locally on a given port."""
+        from feast import offline_server
+
+        offline_server.start_server(self, host, port)
+
+    @log_exceptions_and_usage
     def serve_transformations(self, port: int) -> None:
         """Start the feature transformation server locally on a given port."""
         warnings.warn(
