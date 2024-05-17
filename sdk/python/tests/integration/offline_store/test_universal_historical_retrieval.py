@@ -44,7 +44,7 @@ np.random.seed(0)
 @pytest.mark.parametrize(
     "use_substrait_odfv", [True, False], ids=lambda v: f"substrait:{v}"
 )
-def test_historical_features(
+def test_historical_features_main(
     environment, universal_data_sources, full_feature_names, use_substrait_odfv
 ):
     store = environment.feature_store
@@ -139,8 +139,7 @@ def test_historical_features(
 
     if job_from_df.supports_remote_storage_export():
         files = job_from_df.to_remote_storage()
-        print(files)
-        assert len(files) > 0  # This test should be way more detailed
+        assert len(files)  # 0  # This test should be way more detailed
 
     start_time = datetime.utcnow()
     actual_df_from_df_entities = job_from_df.to_df()
