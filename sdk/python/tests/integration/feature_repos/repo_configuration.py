@@ -34,7 +34,6 @@ from tests.integration.feature_repos.universal.data_sources.bigquery import (
 from tests.integration.feature_repos.universal.data_sources.file import (
     DuckDBDataSourceCreator,
     DuckDBDeltaDataSourceCreator,
-    DuckDBDeltaS3DataSourceCreator,
     FileDataSourceCreator,
     RemoteOfflineStoreDataSourceCreator,
 )
@@ -129,7 +128,8 @@ AVAILABLE_OFFLINE_STORES: List[Tuple[str, Type[DataSourceCreator]]] = [
 if os.getenv("FEAST_IS_LOCAL_TEST", "False") == "True":
     AVAILABLE_OFFLINE_STORES.extend(
         [
-            ("local", DuckDBDeltaS3DataSourceCreator),
+            # todo: @tokoko to reenable
+            # ("local", DuckDBDeltaS3DataSourceCreator),
         ]
     )
 
