@@ -9,6 +9,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictBool,
     StrictInt,
     StrictStr,
     ValidationError,
@@ -87,10 +88,13 @@ FEATURE_SERVER_CONFIG_CLASS_FOR_TYPE = {
     "local": "feast.infra.feature_servers.local_process.config.LocalFeatureServerConfig",
 }
 
+ALLOWED_AUTH_TYPES = ["no_auth", "kubernetes", "oidc"]
+
 AUTH_CONFIGS_CLASS_FOR_TYPE = {
     "no_auth": "feast.permissions.auth_model.NoAuthConfig",
     "kubernetes": "feast.permissions.auth_model.KubernetesAuthConfig",
     "oidc": "feast.permissions.auth_model.OidcAuthConfig",
+    "oidc_client": "feast.permissions.auth_model.OidcClientAuthConfig",
 }
 
 
@@ -129,11 +133,10 @@ class RegistryConfig(FeastBaseModel):
     s3_additional_kwargs: Optional[Dict[str, str]] = None
     """ Dict[str, str]: Extra arguments to pass to boto3 when writing the registry file to S3. """
 
-    sqlalchemy_config_kwargs: Dict[str, Any] = {}
-    """ Dict[str, Any]: Extra arguments to pass to SQLAlchemy.create_engine. """
-
-    cache_mode: StrictStr = "sync"
-    """ str: Cache mode type, Possible options are sync and thread(asynchronous caching using threading library)"""
+    purge_feast_metadata: StrictBool = False
+    """ bool: Stops using feast_metadata table and delete data from feast_metadata table.
+        Once this is set to True, it cannot be reverted back to False. Reverting back to False will
+        only reset the project but not all the projects"""
 
     @field_validator("path")
     def validate_path(cls, path: str, values: ValidationInfo) -> str:
@@ -291,11 +294,17 @@ class RepoConfig(FeastBaseModel):
     def auth_config(self):
         if not self._auth:
             if isinstance(self.auth, Dict):
-                self._auth = get_auth_config_from_type(self.auth.get("type"))(
-                    **self.auth
+                is_oidc_client = (
+                    self.auth.get("type") == AuthType.OIDC.value
+                    and "username" in self.auth
+                    and "password" in self.auth
+                    and "client_secret" in self.auth
                 )
+                self._auth = get_auth_config_from_type(
+                    "oidc_client" if is_oidc_client else self.auth.get("type")
+                )(**self.auth)
             elif isinstance(self.auth, str):
-                self._auth = get_auth_config_from_type(self.auth.get("type"))()
+                self._auth = get_auth_config_from_type(self.auth)()
             elif self.auth:
                 self._auth = self.auth
 
@@ -336,22 +345,21 @@ class RepoConfig(FeastBaseModel):
         from feast.permissions.auth_model import AuthConfig
 
         if "auth" in values:
-            allowed_auth_types = AUTH_CONFIGS_CLASS_FOR_TYPE.keys()
             if isinstance(values["auth"], Dict):
                 if values["auth"].get("type") is None:
                     raise ValueError(
-                        f"auth configuration is missing authentication type. Possible values={allowed_auth_types}"
+                        f"auth configuration is missing authentication type. Possible values={ALLOWED_AUTH_TYPES}"
                     )
-                elif values["auth"]["type"] not in allowed_auth_types:
+                elif values["auth"]["type"] not in ALLOWED_AUTH_TYPES:
                     raise ValueError(
                         f'auth configuration has invalid authentication type={values["auth"]["type"]}. Possible '
-                        f'values={allowed_auth_types}'
+                        f'values={ALLOWED_AUTH_TYPES}'
                     )
             elif isinstance(values["auth"], AuthConfig):
-                if values["auth"].type not in allowed_auth_types:
+                if values["auth"].type not in ALLOWED_AUTH_TYPES:
                     raise ValueError(
                         f'auth configuration has invalid authentication type={values["auth"].type}. Possible '
-                        f'values={allowed_auth_types}'
+                        f'values={ALLOWED_AUTH_TYPES}'
                     )
         return values
 

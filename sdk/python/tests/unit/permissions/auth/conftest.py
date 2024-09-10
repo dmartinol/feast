@@ -8,6 +8,7 @@ from tests.unit.permissions.auth.server.test_utils import (
     read_fv_perm,
     read_odfv_perm,
     read_permissions_perm,
+    read_projects_perm,
     read_sfv_perm,
 )
 from tests.unit.permissions.auth.test_token_parser import _CLIENT_ID
@@ -75,10 +76,7 @@ def oidc_config() -> OidcAuthConfig:
     return OidcAuthConfig(
         auth_discovery_url="https://localhost:8080/realms/master/.well-known/openid-configuration",
         client_id=_CLIENT_ID,
-        client_secret="",
-        username="",
-        password="",
-        realm="",
+        type="oidc",
     )
 
 
@@ -93,6 +91,7 @@ def oidc_config() -> OidcAuthConfig:
             read_fv_perm,
             read_odfv_perm,
             read_sfv_perm,
+            read_projects_perm,
         ],
     ],
 )

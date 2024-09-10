@@ -1,6 +1,6 @@
 from concurrent import futures
 from datetime import datetime, timezone
-from typing import Union, cast
+from typing import Optional, Union, cast
 
 import grpc
 from google.protobuf.empty_pb2 import Empty
@@ -8,11 +8,13 @@ from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 from grpc_reflection.v1alpha import reflection
 
 from feast import FeatureService, FeatureStore
+from feast.base_feature_view import BaseFeatureView
 from feast.data_source import DataSource
 from feast.entity import Entity
 from feast.errors import FeatureViewNotFoundException
 from feast.feast_object import FeastObject
 from feast.feature_view import FeatureView
+from feast.grpc_error_interceptor import ErrorInterceptor
 from feast.infra.infra_object import Infra
 from feast.infra.registry.base_registry import BaseRegistry
 from feast.on_demand_feature_view import OnDemandFeatureView
@@ -23,16 +25,40 @@ from feast.permissions.security_manager import (
     assert_permissions_to_update,
     permitted_resources,
 )
-from feast.permissions.server.grpc import grpc_interceptors
+from feast.permissions.server.grpc import AuthInterceptor
 from feast.permissions.server.utils import (
+    AuthManagerType,
     ServerType,
     init_auth_manager,
     init_security_manager,
     str_to_auth_manager_type,
 )
+from feast.project import Project
 from feast.protos.feast.registry import RegistryServer_pb2, RegistryServer_pb2_grpc
 from feast.saved_dataset import SavedDataset, ValidationReference
 from feast.stream_feature_view import StreamFeatureView
+
+
+def _build_any_feature_view_proto(feature_view: BaseFeatureView):
+    if isinstance(feature_view, StreamFeatureView):
+        arg_name = "stream_feature_view"
+        feature_view_proto = feature_view.to_proto()
+    elif isinstance(feature_view, FeatureView):
+        arg_name = "feature_view"
+        feature_view_proto = feature_view.to_proto()
+    elif isinstance(feature_view, OnDemandFeatureView):
+        arg_name = "on_demand_feature_view"
+        feature_view_proto = feature_view.to_proto()
+
+    return RegistryServer_pb2.AnyFeatureView(
+        feature_view=feature_view_proto if arg_name == "feature_view" else None,
+        stream_feature_view=feature_view_proto
+        if arg_name == "stream_feature_view"
+        else None,
+        on_demand_feature_view=feature_view_proto
+        if arg_name == "on_demand_feature_view"
+        else None,
+    )
 
 
 class RegistryServer(RegistryServer_pb2_grpc.RegistryServerServicer):
@@ -175,6 +201,27 @@ class RegistryServer(RegistryServer_pb2_grpc.RegistryServerServicer):
             actions=[AuthzedAction.DESCRIBE],
         ).to_proto()
 
+    def GetAnyFeatureView(
+        self, request: RegistryServer_pb2.GetAnyFeatureViewRequest, context
+    ):
+        feature_view = assert_permissions(
+            cast(
+                FeastObject,
+                self.proxied_registry.get_any_feature_view(
+                    name=request.name,
+                    project=request.project,
+                    allow_cache=request.allow_cache,
+                ),
+            ),
+            actions=[AuthzedAction.DESCRIBE],
+        )
+
+        return RegistryServer_pb2.GetAnyFeatureViewResponse(
+            any_feature_view=_build_any_feature_view_proto(
+                cast(BaseFeatureView, feature_view)
+            )
+        )
+
     def ApplyFeatureView(
         self, request: RegistryServer_pb2.ApplyFeatureViewRequest, context
     ):
@@ -215,6 +262,26 @@ class RegistryServer(RegistryServer_pb2_grpc.RegistryServerServicer):
                     resources=cast(
                         list[FeastObject],
                         self.proxied_registry.list_feature_views(
+                            project=request.project,
+                            allow_cache=request.allow_cache,
+                            tags=dict(request.tags),
+                        ),
+                    ),
+                    actions=AuthzedAction.DESCRIBE,
+                )
+            ]
+        )
+
+    def ListAllFeatureViews(
+        self, request: RegistryServer_pb2.ListAllFeatureViewsRequest, context
+    ):
+        return RegistryServer_pb2.ListAllFeatureViewsResponse(
+            feature_views=[
+                _build_any_feature_view_proto(cast(BaseFeatureView, feature_view))
+                for feature_view in permitted_resources(
+                    resources=cast(
+                        list[FeastObject],
+                        self.proxied_registry.list_all_feature_views(
                             project=request.project,
                             allow_cache=request.allow_cache,
                             tags=dict(request.tags),
@@ -622,6 +689,58 @@ class RegistryServer(RegistryServer_pb2_grpc.RegistryServerServicer):
         )
         return Empty()
 
+    def ApplyProject(self, request: RegistryServer_pb2.ApplyProjectRequest, context):
+        project = cast(
+            Project,
+            assert_permissions_to_update(
+                resource=Project.from_proto(request.project),
+                getter=self.proxied_registry.get_project,
+                project=Project.from_proto(request.project).name,
+            ),
+        )
+        self.proxied_registry.apply_project(
+            project=project,
+            commit=request.commit,
+        )
+        return Empty()
+
+    def GetProject(self, request: RegistryServer_pb2.GetProjectRequest, context):
+        project = self.proxied_registry.get_project(
+            name=request.name, allow_cache=request.allow_cache
+        )
+        assert_permissions(
+            resource=project,
+            actions=[AuthzedAction.DESCRIBE],
+        )
+        return project.to_proto()
+
+    def ListProjects(self, request: RegistryServer_pb2.ListProjectsRequest, context):
+        return RegistryServer_pb2.ListProjectsResponse(
+            projects=[
+                project.to_proto()
+                for project in permitted_resources(
+                    resources=cast(
+                        list[FeastObject],
+                        self.proxied_registry.list_projects(
+                            allow_cache=request.allow_cache
+                        ),
+                    ),
+                    actions=AuthzedAction.DESCRIBE,
+                )
+            ]
+        )
+
+    def DeleteProject(self, request: RegistryServer_pb2.DeleteProjectRequest, context):
+        assert_permissions(
+            resource=self.proxied_registry.get_project(
+                name=request.name,
+            ),
+            actions=[AuthzedAction.DELETE],
+        )
+
+        self.proxied_registry.delete_project(name=request.name, commit=request.commit)
+        return Empty()
+
     def Commit(self, request, context):
         self.proxied_registry.commit()
         return Empty()
@@ -645,7 +764,7 @@ def start_server(store: FeatureStore, port: int, wait_for_termination: bool = Tr
 
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=10),
-        interceptors=grpc_interceptors(auth_manager_type),
+        interceptors=_grpc_interceptors(auth_manager_type),
     )
     RegistryServer_pb2_grpc.add_RegistryServerServicer_to_server(
         RegistryServer(store.registry), server
@@ -668,3 +787,21 @@ def start_server(store: FeatureStore, port: int, wait_for_termination: bool = Tr
         server.wait_for_termination()
     else:
         return server
+
+
+def _grpc_interceptors(
+    auth_type: AuthManagerType,
+) -> Optional[list[grpc.ServerInterceptor]]:
+    """
+    A list of the interceptors for the registry server.
+
+    Args:
+        auth_type: The type of authorization manager, from the feature store configuration.
+
+    Returns:
+        list[grpc.ServerInterceptor]: Optional list of interceptors. If the authorization type is set to `NONE`, it returns `None`.
+    """
+    if auth_type == AuthManagerType.NONE:
+        return [ErrorInterceptor()]
+
+    return [AuthInterceptor(), ErrorInterceptor()]
